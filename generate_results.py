@@ -8,7 +8,7 @@ from natsort import natsorted
 from ultralytics import YOLO
 from pose_evaluation_utils import *
 
-MODEL = "yolo11n.pt"
+MODEL = "best.pt"
 
 
 fx, fy, cx, cy = [718.8560, 718.8560, 607.1928, 185.2157]
@@ -18,12 +18,16 @@ if MODEL == "yolo11n.pt":
     #0:person, 1:bicycle, 2:car, 3:motorcycle
     DETECTED_CLASSES = [0, 1, 2, 3]
     CAR_CLASS = [2]
+    #person:gray, bicycle:gray, car:red, motorcycle:gray
+    COLORS_CLASSES = {0:(128, 128, 128),1:(128, 128, 128),2:(255,0,0),3:(128, 128, 128)}
 
 # trained model 
 elif MODEL == "best.pt":
     #0:Car, 1:Pedestrian, 2:Van, 3:Cyclist, 4:Truck, 5:Misc
     DETECTED_CLASSES = [0, 1, 2, 3, 4, 5]
     CAR_CLASS = [0]
+    #Car:red, Pedestrian:gray, Van:gray, Cyclist:gray, Truck:gray, Misc:gray
+    COLORS_CLASSES = {0:(255,0,0),1:(128, 128, 128),2:(128, 128, 128),3:(128, 128, 128),4:(128, 128, 128),5:(128, 128, 128)}
 
 model = YOLO(MODEL)
 
@@ -54,6 +58,9 @@ def generate_poses(seq:str, N:int, use_YOLO:bool, Filter_static_objs:bool = Fals
     curr_R = np.eye(3)
     curr_t = np.array([[0], [0], [0]])
 
+    # write initial values in file
+    write_pose(curr_R,curr_t,output_file)
+
     # for all images...
     for i in range(1,N):
         
@@ -74,7 +81,7 @@ def generate_poses(seq:str, N:int, use_YOLO:bool, Filter_static_objs:bool = Fals
             disconsider_static_objects(prev_img, curr_img, prev_mask, curr_mask)
             
         # find matched points
-        pts1,pts2 = find_points(prev_img,curr_img,nfeatures=6000,mask1=prev_mask,mask2=curr_mask)
+        pts1,pts2 = find_points(prev_img,curr_img,mask1=prev_mask,mask2=curr_mask)
 
         # Find R and t between two frames
         R,t = calculate_R_and_t(pts1, pts2)
@@ -87,104 +94,80 @@ def generate_poses(seq:str, N:int, use_YOLO:bool, Filter_static_objs:bool = Fals
         write_pose(curr_R,curr_t,output_file)
 
 
+def test_filtering(seq:str, samples:list[int], inlier_ratio):
 
-def generate_images_with_boxes(seq):
+    # get all KITTI sequency imgs
+    img_list,N = get_N_images_from_folder(seq,10000)
+
+    for i in samples:
+
+        curr_img = cv2.imread(img_list[i])
+        results = model(cv2.cvtColor(curr_img, cv2.COLOR_BGR2RGB))
+        curr_boxes = boxes_to_xyxy(results, DETECTED_CLASSES)
+
+        for b in curr_boxes:
+            draw_box(curr_img, b)
+
+        plt.imshow(cv2.cvtColor(curr_img,cv2.COLOR_BGR2RGB))
+        plt.show()
+
+        # get previous img
+        prev_img = cv2.imread(img_list[i-1])
+
+        # find moving boxes
+        moving_idxs, box_inliers, global_inliers = classify_moving_boxes(prev_img,curr_img,curr_boxes,inlier_ratio = inlier_ratio)
+
+        print(f"global inliers = {global_inliers:.2}")
+
+        # b: (x1,y1,x2,y2,cls,conf)
+        for idx,b in enumerate(curr_boxes):
+            print(f"box {idx} (cls={b[4]}, conf={b[5]:.2}): inliers = {box_inliers[idx]:.2}", end="")
+            if idx in moving_idxs: print(" ==> moving")
+            else: print(" ==> static")
+
+        print(100*"-")
+        
 
 
-    input_folder = './data/data_odometry_color/dataset/sequences/'+seq+'/image_2'
+# create images with boxes around detected objects
+def generate_images_with_boxes(seq:str, N:int, Filter_static_objs:bool = False, inlier_ratio = 0.5):
+
+    # get N KITTI sequency imgs
+    img_list,N = get_N_images_from_folder(seq,N)
+
+    # output folder
     output_folder = './results/yolo_boxes/'+seq
-
     os.makedirs(output_folder, exist_ok=True)
 
+    for i in range(0,N):
 
-    image_files = sorted(f for f in os.listdir(input_folder) if f.endswith('.png'))
+        # imgs     
+        curr_img = cv2.imread(img_list[i]) 
 
-    for filename in image_files:
-        filepath = os.path.join(input_folder, filename)
+        # detections
+        results = model(cv2.cvtColor(curr_img, cv2.COLOR_BGR2RGB))
 
-        img = cv2.imread(filepath)
+        # build (x1,y1,x2,y2,cls,conf) lists 
+        curr_boxes = boxes_to_xyxy(results, DETECTED_CLASSES)
 
-        results = model(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
+        # if we want to remove boxes in static objects (cars)
+        if(Filter_static_objs and i>0):
 
-        result_img = results[0].plot()
+            # get previous img
+            prev_img = cv2.imread(img_list[i-1])
 
-        save_path = os.path.join(output_folder, filename)
-        plt.imsave(save_path, result_img)
+            # find moving boxes
+            moving_idxs,_,_ = classify_moving_boxes(prev_img,curr_img,curr_boxes,inlier_ratio=inlier_ratio)
 
+            # remove static boxes
+            curr_boxes = [box for i, box in enumerate(curr_boxes) if i in moving_idxs]
 
-def generate_images_with_boxes_filtered(seq):
-    input_folder = './data/data_odometry_color/dataset/sequences/'+seq+'/image_2'
-    output_folder = './results/yolo_boxes/'+seq
-    os.makedirs(output_folder, exist_ok=True)
+        # draw boxes
+        for b in curr_boxes:
+            draw_box(curr_img, b)
 
-    image_files = sorted(f for f in os.listdir(input_folder) if f.endswith('.png'))
-
-    prev_img = None
-    prev_car_boxes = None
-
-    for filename in image_files:
-
-        filepath = os.path.join(input_folder, filename)
-        img = cv2.imread(filepath)
-
-        # Run YOLO
-        results = model(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
-        names = results[0].names if hasattr(results[0], "names") else getattr(model, "names", {})
-
-        # Split detections: cars vs others
-        car_boxes = []
-        other_boxes = []
-        for box, cls, conf in zip(results[0].boxes.xyxy, results[0].boxes.cls, results[0].boxes.conf):
-            x1, y1, x2, y2 = box.int().tolist()
-            c = int(cls); cf = float(conf)
-            if c == 2:  #(car)
-                car_boxes.append((x1, y1, x2, y2, c, cf))
-            else:
-                other_boxes.append((x1, y1, x2, y2, c, cf))
-
-        # Decide which cars are moving (skip on first frame)
-        moving_idxs = set()
-        if prev_img is not None and len(car_boxes) > 0:
-            moving_idxs = classify_moving_boxes(
-                prev_img, img,
-                car_boxes_curr=car_boxes,
-                nfeatures=6000,
-                inlier_ratio_drop=0.5
-            )
-
-        # Draw: all non-car objects; only moving cars
-        vis = img.copy()
-
-        def draw_box(b, color=(0, 255, 0)):
-            x1, y1, x2, y2, c, cf = b
-            label = f"{names.get(c, str(c))} {cf:.2f}" if isinstance(names, dict) else f"{c} {cf:.2f}"
-            cv2.rectangle(vis, (x1, y1), (x2, y2), color, 2)
-            (tw, th), base = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
-            y_text = max(y1, th + 3)
-            cv2.rectangle(vis, (x1, y_text - th - 3), (x1 + tw + 2, y_text + base - 3), (0, 0, 0), -1)
-            cv2.putText(vis, label, (x1 + 1, y_text - 2), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
-
-        # others (persons, bikes, etc.)
-        for b in other_boxes:
-            draw_box(b, color=(255, 0, 0))  # blue-ish for non-car classes
-
-        # cars: first frame -> draw all; otherwise draw only moving ones
-        if prev_img is None:
-            for b in car_boxes:
-                draw_box(b, color=(0, 255, 0))  # green
-        else:
-            for idx, b in enumerate(car_boxes):
-                if idx in moving_idxs:
-                    draw_box(b, color=(0, 255, 0))  # green for moving car
-                # else: skip non-moving car (no box)
-
-        # Save
-        save_path = os.path.join(output_folder, filename)
-        cv2.imwrite(save_path, vis)  # keep BGR correct on disk
-
-        # Update previous frame state
-        prev_img = img
-        prev_car_boxes = car_boxes
+        # save img
+        plt.imsave(output_folder + "\\" + os.path.basename(img_list[i]), cv2.cvtColor(curr_img, cv2.COLOR_BGR2RGB))
 
 # create video with imgs created by generate_images_with_boxes
 def generate_video(seq,fps=10):
@@ -235,7 +218,7 @@ def iou(boxA, boxB):
     return inter / float(areaA + areaB - inter)
 
 # find matched points 
-def find_points(prev_img,curr_img,nfeatures,mask1,mask2):
+def find_points(prev_img,curr_img,nfeatures=6000,mask1=None,mask2=None):
     """
     imgs: BGR
     """
@@ -283,7 +266,7 @@ def disconsider_static_objects(prev_img, curr_img, prev_mask, curr_mask):
     curr_boxes = boxes_to_xyxy(curr_results, CAR_CLASS)
 
     # find moving boxes
-    moving_idxs = classify_moving_boxes(prev_img,curr_img,curr_boxes)
+    moving_idxs,_,_ = classify_moving_boxes(prev_img,curr_img,curr_boxes)
 
     # Disconsider not moving cars 
     for idx, (x1, y1, x2, y2, cls, conf) in enumerate(curr_boxes):
@@ -295,14 +278,12 @@ def disconsider_static_objects(prev_img, curr_img, prev_mask, curr_mask):
 # return ixs of moving objects
 def classify_moving_boxes(prev_img, curr_img, boxes_curr,
                           nfeatures=6000, 
-                          inlier_ratio_drop=0.5):
+                          inlier_ratio=0.5):
     """
-    Return the indices of moving cars
-
     Strategy:
       1) Compute ORB matches on the whole frame (no mask) and estimate Essential matrix with RANSAC.
       2) For each current car box, compute the fraction of matches that are RANSAC inliers.
-         - If this box inlier ratio << global inlier ratio => moving.
+         - If box inlier ratio < global inlier ratio * inlier_ratio => moving.
     """
 
     # matches
@@ -316,10 +297,11 @@ def classify_moving_boxes(prev_img, curr_img, boxes_curr,
     )
 
     # fraction of inliers
-    global_inlier_ratio = inlier_mask.mean() 
+    global_inliers = inlier_mask.mean() 
     
     # prepare to enter the for loop...
-    moving_idxs = set()
+    moving_idxs = []
+    box_inliers_all = []
     
     # for each box...
     for idx, (x1, y1, x2, y2, cls, conf) in enumerate(boxes_curr):
@@ -334,12 +316,13 @@ def classify_moving_boxes(prev_img, curr_img, boxes_curr,
 
         # fraction of inliers inside box
         box_inliers = inlier_mask[idxs].mean()
+        box_inliers_all.append(box_inliers)
 
         # moving?
-        if box_inliers < global_inlier_ratio * inlier_ratio_drop:
-            moving_idxs.add(idx)
+        if box_inliers < global_inliers * inlier_ratio:
+            moving_idxs.append(idx)
 
-    return moving_idxs
+    return moving_idxs, box_inliers_all, global_inliers
 
 # return a list with N imgs of a seq 
 def get_N_images_from_folder(seq,N):
@@ -365,7 +348,7 @@ def get_output_file(seq,use_YOLO):
 
     return output_file
 
-# convert from ultralytics format (results) to (x1,y1,x2,y2,cls,conf)
+# convert from yolo format (results) to (x1,y1,x2,y2,cls,conf)
 def boxes_to_xyxy(results, wanted_classes):
     boxes = []
     for box, cls, conf in zip(results[0].boxes.xyxy, results[0].boxes.cls, results[0].boxes.conf):
@@ -386,6 +369,28 @@ def calculate_R_and_t(pts1, pts2):
     R = R.transpose()
     t = -np.matmul(R, t)
     return R,t
+
+# draw yolo box
+def draw_box(img, b):
+
+    # box attributes
+    x1, y1, x2, y2, c, cf = b
+
+    # dict with detectable classes
+    names = {i: name for i, name in model.names.items() if i in DETECTED_CLASSES}
+
+    # box label
+    label = f"{names.get(c, str(c))} {cf:.2f}" 
+
+    # box color
+    color = COLORS_CLASSES[c]
+
+    # drawing
+    cv2.rectangle(img, (x1, y1), (x2, y2), color, 2)
+    (tw, th), base = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
+    y_text = max(y1, th + 3)
+    cv2.rectangle(img, (x1, y_text - th - 3), (x1 + tw + 2, y_text + base - 3), (0, 0, 0), -1)
+    cv2.putText(img, label, (x1 + 1, y_text - 2), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
 
 # write rotation/translation in a line
 def write_pose(R,t,output_file):
