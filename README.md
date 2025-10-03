@@ -2,6 +2,7 @@
 
 ## Project Structure
 
+```
 project/
 ├── data/ 
 │ ├── data_object_label_2/ # https://www.cvlibs.net/datasets/kitti/eval_object.php
@@ -43,3 +44,4 @@ project/
 ├── generate_results.py # main script to generate results
 ├── pose_evaluation_utils.py 
 └── workspace.ipynb # main Jupyter notebook
+```
