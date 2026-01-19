@@ -1,5 +1,9 @@
 # Monocular Visual Odometry with YOLO-Based Dynamic Object Filtering on KITTI daatset
 
+## Main Script
+
+- generate_results.py
+
 ## Project Structure
 
 ```
