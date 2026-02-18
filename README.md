@@ -1,5 +1,9 @@
 # Monocular Visual Odometry with YOLO-Based Dynamic Object Filtering on KITTI daatset
 
+## Article
+
+https://ieeexplore.ieee.org/document/11249601
+
 ## Main Script
 
 - generate_results.py
